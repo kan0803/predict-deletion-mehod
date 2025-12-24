@@ -1,0 +1,13 @@
+pandas
+numpy
+scikit-learn
+lightgbm
+xgboost
+matplotlib
+seaborn
+requests
+openai
+pandas
+tiktoken
+backoff
+python-dotenv
