@@ -15,7 +15,6 @@ warnings.filterwarnings("ignore")
 INPUT_FILE = 'pre_features.csv'
 OUTPUT_IMPORTANCE_FILE = 'bootstrap_feature_importances.csv'
 OUTPUT_REPORT_FILE = 'bootstrap_evaluation_report.txt'
-OUTPUT_SAMPLE_FILE = 'sample_42_methods.csv' # 抽出した42件を保存するファイル
 
 # ブートストラップ設定
 N_BOOTSTRAP_ITER = 100 
@@ -27,9 +26,6 @@ DROP_COLS = [
     'repo_name', 'pr_url', 'filepath', 'method_key', 'class_name', 'method_name',
     'is_truly_added', 'survival_status'
 ]
-
-# 抽出したい列
-INFO_COLS = ['pr_url', 'filepath', 'method_name']
 
 RF_PARAMS = {
     'n_estimators': 200,
@@ -113,30 +109,6 @@ def main():
         df_survived_sample = df_survived.sample(n=n_deleted, replace=False, random_state=i)
         df_balanced = pd.concat([df_deleted, df_survived_sample])
         
-        # --- 初回のみサンプル抽出して保存 ---
-        if i == 0:
-            print("\n=== 初回サンプリングからのデータ抽出 (21 survived, 21 deleted) ===")
-            
-            sample_survived = df_balanced[df_balanced[TARGET_COL] == survived_val]
-            sample_deleted = df_balanced[df_balanced[TARGET_COL] == deleted_val]
-            
-            n_extract = 21
-            out_survived = sample_survived.sample(n=min(n_extract, len(sample_survived)), random_state=42)
-            out_deleted = sample_deleted.sample(n=min(n_extract, len(sample_deleted)), random_state=42)
-            
-            out_combined = pd.concat([out_survived, out_deleted])
-            
-            # クラス名を戻す
-            out_combined['status_label'] = le.inverse_transform(out_combined[TARGET_COL])
-            
-            cols_to_export = ['status_label'] + [c for c in INFO_COLS if c in out_combined.columns]
-            export_df = out_combined[cols_to_export]
-            
-            print(export_df.to_string(index=False))
-            export_df.to_csv(OUTPUT_SAMPLE_FILE, index=False)
-            print(f"\n上記データを '{OUTPUT_SAMPLE_FILE}' に保存しました。\n")
-            print("="*60 + "\n")
-
         # 学習データ準備
         X = df_balanced[feature_cols]
         y = df_balanced[TARGET_COL].values
@@ -213,7 +185,7 @@ def main():
     }).sort_values(by='Importance_Mean', ascending=False)
     
     imp_df.to_csv(OUTPUT_IMPORTANCE_FILE, index=False)
-    print(f"\n完了: {OUTPUT_IMPORTANCE_FILE}, {OUTPUT_REPORT_FILE}, {OUTPUT_SAMPLE_FILE}")
+    print(f"\n完了: {OUTPUT_IMPORTANCE_FILE}, {OUTPUT_REPORT_FILE}")
 
 if __name__ == "__main__":
     main()
