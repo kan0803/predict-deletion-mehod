@@ -46,7 +46,6 @@ def make_dataset():
         print(f"Warning: {failed_extraction} 件のメソッド名の抽出に失敗しました。")
 
     # データセットの結合（内部結合）
-    # filepath, class_name, method_name が一致するものを紐付けます
     print("Merging datasets...")
     merged = pd.merge(
         df_pre, 
@@ -56,16 +55,38 @@ def make_dataset():
         suffixes=('', '_method_csv'),
         how='inner'
     )
+    
+    # --- 【追加箇所】重複削除処理 ---
+    print("Checking for duplicates...")
+    initial_len = len(merged)
+    
+    # 重複判定のキーとなるカラム
+    subset_cols = ['filepath', 'class_name', 'method_name']
+    
+    # 重複を削除（keep='first' で最初の1件を残す）
+    merged = merged.drop_duplicates(subset=subset_cols, keep='first')
+    
+    # 削除後の件数確認
+    final_len = len(merged)
+    dropped_count = initial_len - final_len
+    
+    if dropped_count > 0:
+        print(f"Removed {dropped_count} duplicate rows based on {subset_cols}.")
+    else:
+        print("No duplicates found.")
 
-    print(f"Merged dataframe shape: {merged.shape}")
-    print(f"Rows in pre_features: {len(df_pre)}, Rows in method: {len(df_method)}")
+    # --- 【重要】インデックスのリセット ---
+    # 行を削除するとインデックスが不連続になり、後続のKFoldでのiloc参照でエラーになるためリセットする
+    merged = merged.reset_index(drop=True)
+    # -----------------------------------
+
+    print(f"Final merged dataframe shape: {merged.shape}")
     
     if len(merged) == 0:
-        print("Error: 結合後のデータが0件です。filepath, class_name, method_nameが正しく一致しているか確認してください。")
+        print("Error: 結合・重複削除後のデータが0件です。")
         return
 
     # Stratified Split (層化分割)
-    # statusの割合を維持して分割します
     target = merged['status']
     
     skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
@@ -75,22 +96,17 @@ def make_dataset():
     
     print(f"Splitting into 10 folds and saving to /{output_dir}...")
     
-    # 10分割したそれぞれのパーティションを作成して保存
     for i, (train_idx, test_idx) in enumerate(skf.split(merged, target)):
-        # test_idx をその分割のデータとして使用（n_splits=10なので、全データが重複なく10個に分割されます）
+        # test_idx をその分割のデータとして使用
         fold_data = merged.iloc[test_idx]
         
         # 1. pre_features側のデータを復元
-        # df_preの元のカラムを取得
         cols_pre = df_pre.columns
         fold_pre = fold_data[cols_pre]
         
         # 2. method側のデータを復元
-        # method.csvのカラム: status, method, filepath, class_name
-        # statusは重複しているため、method.csv由来のもの（status_method_csv）を使用
-        
         fold_method = pd.DataFrame()
-        # statusカラムの取得（マージ時のサフィックス処理に対応）
+        
         if 'status_method_csv' in fold_data.columns:
             fold_method['status'] = fold_data['status_method_csv']
         else:
@@ -100,7 +116,6 @@ def make_dataset():
         fold_method['filepath'] = fold_data['filepath']
         fold_method['class_name'] = fold_data['class_name']
         
-        # カラム順序を元のmethod.csvに合わせる
         fold_method = fold_method[['status', 'method', 'filepath', 'class_name']]
         
         # 保存
