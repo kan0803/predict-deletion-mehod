@@ -13,12 +13,12 @@ CSV_FILE_PATH = 'pre_features.csv'
 TARGET_COL = 'status'
 
 TARGET_FEATURES_LIST = [
-    'is_getter', 'is_setter', 'is_has_checker', 'is_print', 'is_test', 
-    'first_word', 'is_dunder_method', 'is_test_method', 'call_expression_count', 
-    'max_nesting_depth', 'cyclomatic_complexity', 'halstead_volume', 'is_async', 
-    'has_return_value', 'param_count', 'char_length', 'loc', 'definition_location', 
-    'has_docstring', 'docstring_length', 'comment_loc_ratio', 'avg_var_name_length', 
-    'uses_constants', 'uses_list_comp', 'uses_generator', 'uses_try_except'
+    'code_loc', 'char_length', 'tokens', 'docstring_words', 'method_name_words',
+    'is_getter', 'is_setter', 'is_IsHas', 'is_test', 'is_in_test_code',
+    'is_private', 'is_dunder_method', 'has_return', 'number_of_variable',
+    'number_of_print', 'cyclomatic_complexity', 'halstead_volume',
+    'max_nesting_depth', 'param_count', 'call_expression_count',
+    'comment_ratio', 'uses_try_except', 'uses_constants'
 ]
 
 # Top 3 選定時に除外する「2値変数」のプレフィックス (これらを含む変数はTop3候補から外れます)
@@ -29,7 +29,6 @@ IGNORE_FOR_STATS_RANKING = ['is_truly_added']
 
 # 外れ値の上限設定
 outlier_caps = {
-    'avg_var_name_length': 18,
     'comment_loc_ratio': 0.4,
     'char_length': 6000,
     'loc': 150,

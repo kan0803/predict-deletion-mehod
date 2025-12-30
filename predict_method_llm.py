@@ -9,7 +9,7 @@ import openai
 import pandas as pd
 import tiktoken
 import concurrent.futures
-import ast  # 追加: メソッド名抽出用
+import ast
 from threading import Lock
 from dotenv import load_dotenv
 
@@ -26,7 +26,7 @@ load_dotenv()
 # ==========================================
 # 1. 設定 (Configuration)
 # ==========================================
-INPUT_FILE = "method.csv"  # 変更: 入力ファイル名
+INPUT_FILE = "method.csv"
 OUTPUT_FILE = "predict.csv"
 MODEL = "gpt-5.2"  # 必要に応じて gpt-4o などに変更してください
 
@@ -54,21 +54,15 @@ def truncate_to_tokens(text: str, max_tokens: int) -> str:
     return ENC.decode(toks[:max_tokens])
 
 def extract_method_name_from_code(code: str) -> str:
-    """
-    Pythonコード文字列から関数名を抽出する
-    """
     if pd.isna(code):
         return "unknown"
     try:
-        # AST解析で確実に関数名を取得
         tree = ast.parse(str(code))
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 return node.name
     except SyntaxError:
-        # コード断片などでパースできない場合の簡易的なフォールバック
         try:
-            # "def func_name" のパターンを探す簡易処理
             lines = str(code).splitlines()
             for line in lines:
                 stripped = line.strip()
@@ -148,13 +142,10 @@ def process_data(max_workers: int = 10):
     # 有効なデータのみ抽出
     df_input = df_input[df_input['status_int'] != -1].reset_index(drop=True)
     
-    # -------------------------------------------------------
-    # 追加: methodカラムからmethod_nameを抽出
-    # -------------------------------------------------------
     print("Extracting method names...")
     df_input['method_name'] = df_input['method'].apply(extract_method_name_from_code)
     
-    print(f"Loaded {len(df_input)} valid rows. (Deleted: {len(df_input[df_input['status_int']==0])})")
+    print(f"Loaded {len(df_input)} valid rows.")
 
     # Resume（再開）ロジック
     results = []
@@ -165,49 +156,84 @@ def process_data(max_workers: int = 10):
         except:
             print(f"{OUTPUT_FILE} is empty or corrupted. Starting from scratch.")
 
-    # 処理済みインデックスを取得
     processed_indices = {r.get('index_orig') for r in results if 'index_orig' in r}
     
+    # -------------------------------------------------------
+    # タスク作成: filepath, class_name を追加で渡す
+    # -------------------------------------------------------
     tasks = []
     for idx, row in df_input.iterrows():
         if idx not in processed_indices:
-            # タスクに method_name を追加
-            tasks.append((idx, row['status_int'], row['method'], row['method_name']))
+            # 安全に値を取得（カラムが存在しない場合に備えてgetを使用）
+            filepath = row.get('filepath', '')
+            class_name = row.get('class_name', '')
+            
+            tasks.append((
+                idx, 
+                row['status_int'], 
+                row['method'], 
+                row['method_name'],
+                filepath, 
+                class_name
+            ))
 
     lock = Lock()
 
-    # ラッパー関数も method_name を受け取るように変更
-    def task_wrapper(index, original, code, method_name):
+    # -------------------------------------------------------
+    # ラッパー関数: 引数に filepath, class_name を追加
+    # -------------------------------------------------------
+    def task_wrapper(index, original, code, method_name, filepath, class_name):
         try:
+            # 予測ロジックにはコードのみを渡す（filepathなどは渡さない仕様）
             reason, pred, conf = predict_with_gpt(code)
+            
             with lock:
                 results.append({
                     "index_orig": index,
-                    "method_name": method_name,  # 追加: カラム保存
-                    "original_status": original,
+                    "method_name": method_name,
+                    "filepath": filepath,         # 結果に含める
+                    "class_name": class_name,     # 結果に含める
+                    "original_status": original,  # 評価・再開用に内部保持
                     "predict": pred,
-                    "reason": reason,
                     "confidence": conf,
-                    "is_correct": (original == pred)
+                    "is_correct": (original == pred),
+                    "reason": reason
                 })
         except Exception as e:
             print(f"[{index}] Error: {e}")
 
     # 並列実行
     if tasks:
-        print(f"Starting prediction for {len(tasks)} remaining items...")
+        print(f"Starting prediction for {len(tasks)} remaining items with {max_workers} workers...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 引数が増えたのでアンパックを変更
-            futures = [executor.submit(task_wrapper, i, t, c, n) for i, t, c, n in tasks]
+            # アンパックする変数を6つに変更
+            futures = [executor.submit(task_wrapper, i, t, c, n, f, cl) for i, t, c, n, f, cl in tasks]
             
             for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
                 future.result()
                 
                 if i % 10 == 0 or i == len(tasks):
                     with lock:
-                        current_snapshot = list(results)
+                        temp_df = pd.DataFrame(list(results))
+                        
+                        # -------------------------------------------------------
+                        # 出力カラムの順序指定
+                        # -------------------------------------------------------
+                        columns_order = [
+                            "index_orig", 
+                            "method_name", 
+                            "filepath", 
+                            "class_name", 
+                            "predict", 
+                            "confidence", 
+                            "is_correct", 
+                            "reason",
+                            "original_status" # 評価・再開用に必要なため末尾に残す
+                        ]
+                        # 存在するカラムだけを選択
+                        final_cols = [c for c in columns_order if c in temp_df.columns]
+                        temp_df[final_cols].to_csv(OUTPUT_FILE, index=False)
                     
-                    pd.DataFrame(current_snapshot).to_csv(OUTPUT_FILE, index=False)
                     if i % 50 == 0:
                         print(f"Progress: {i}/{len(tasks)} completed.")
 
@@ -215,13 +241,23 @@ def process_data(max_workers: int = 10):
     with lock:
         df_final = pd.DataFrame(list(results))
     
-    # カラムの順序を整える（オプション）
-    columns_order = ["index_orig", "method_name", "original_status", "predict", "confidence", "is_correct", "reason"]
-    # 存在するカラムだけを選択して並び替え
-    final_cols = [c for c in columns_order if c in df_final.columns]
+    # カラムの順序を整える
+    target_columns = [
+        "index_orig", 
+        "method_name", 
+        "filepath", 
+        "class_name", 
+        "predict", 
+        "confidence", 
+        "is_correct", 
+        "reason",
+        "original_status"
+    ]
+    final_cols = [c for c in target_columns if c in df_final.columns]
     df_final = df_final[final_cols]
     
     df_final.to_csv(OUTPUT_FILE, index=False)
+    print(f"Saved results to {OUTPUT_FILE}")
 
     # ==========================================
     # 5. 評価指標の出力
@@ -251,4 +287,4 @@ def process_data(max_workers: int = 10):
         print("="*40)
 
 if __name__ == "__main__":
-    process_data(max_workers=10)
+    process_data(max_workers=48)
