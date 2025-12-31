@@ -110,7 +110,7 @@ def preprocess_data(df, is_train=False):
     return X, y
 
 # ==========================================
-# 1. Random Forest (Feature Importance追加版)
+# 1. Random Forest (Median Importance追加版)
 # ==========================================
 def run_rf_experiment():
     print("\n" + "="*60)
@@ -118,7 +118,7 @@ def run_rf_experiment():
     print("="*60)
     
     all_scores = []
-    feature_importances_list = [] # 各Foldの重要度を格納するリスト
+    feature_importances_list = [] 
     
     for test_idx in range(N_FOLDS):
         df_test_raw = load_fold_data(test_idx, 'pre_features')
@@ -135,7 +135,6 @@ def run_rf_experiment():
         X_train, y_train = preprocess_data(df_train_raw, is_train=True)
         X_test, y_test = preprocess_data(df_test_raw, is_train=False)
         
-        # カラムアライメント
         X_train, X_test = X_train.align(X_test, join='left', axis=1, fill_value=0)
         
         scaler = StandardScaler()
@@ -145,8 +144,6 @@ def run_rf_experiment():
         rf = RandomForestClassifier(**RF_PARAMS)
         rf.fit(X_train_scaled, y_train)
         
-        # --- 重要度の記録 ---
-        # カラム名と重要度をペアにして保存
         imp_df = pd.DataFrame({
             'feature': X_train.columns,
             'importance': rf.feature_importances_
@@ -160,25 +157,25 @@ def run_rf_experiment():
         all_scores.append(scores)
         print(f"Fold {test_idx}: Acc={scores['accuracy']:.4f}, F1(Del)={scores['f1']:.4f}")
 
-    # --- 平均スコアの算出 ---
-    avg_scores = pd.DataFrame(all_scores).mean().to_dict()
+    # --- 中央値スコアの算出 ---
+    median_scores = pd.DataFrame(all_scores).median().to_dict()
     print("-" * 30)
-    print_metrics("RF Average", avg_scores)
+    print_metrics("RF Median", median_scores)
 
-    # --- 平均特徴量重要度の算出と保存 ---
+    # --- 中央値特徴量重要度の算出と保存 ---
     if feature_importances_list:
         all_imp = pd.concat(feature_importances_list)
-        # 特徴量ごとに平均と標準偏差を計算
-        avg_imp = all_imp.groupby('feature')['importance'].agg(['mean', 'std']).reset_index()
-        avg_imp = avg_imp.sort_values(by='mean', ascending=False)
+        # meanをmedianに変更
+        avg_imp = all_imp.groupby('feature')['importance'].agg(['median', 'std']).reset_index()
+        avg_imp = avg_imp.sort_values(by='median', ascending=False)
         
         output_file = 'rf_feature_importance.csv'
         avg_imp.to_csv(output_file, index=False)
         print(f"\n[Feature Importance] Saved to {output_file}")
-        print("Top 10 Features:")
+        print("Top 10 Features (by Median):")
         print(avg_imp.head(10).to_string(index=False))
 
-    return avg_scores
+    return median_scores
 
 # ==========================================
 # 2. Random Prediction (Uniform)
@@ -208,10 +205,10 @@ def run_random_experiment():
         scores = calculate_metrics(y_true, y_pred, y_prob)
         all_scores.append(scores)
         
-    avg_scores = pd.DataFrame(all_scores).mean().to_dict()
+    median_scores = pd.DataFrame(all_scores).median().to_dict()
     print("-" * 30)
-    print_metrics("Random Average", avg_scores)
-    return avg_scores
+    print_metrics("Random Median", median_scores)
+    return median_scores
 
 # ==========================================
 # 3. GPT Experiment (gpt-4o) with Logprobs & Reason
@@ -243,18 +240,12 @@ JSON_SCHEMA = {
 }
 
 def calculate_true_probability(logprobs_content, predicted_val):
-    """
-    Logprobsから '0' (Deleted) である確率を厳密に計算する。
-    """
     if not logprobs_content:
         return 0.5
 
-    # 1. 出力トークン(predicted_val)に対応するLogprobエントリを特定
-    # JSONの "output": 0 または "output": 1 の部分を探す
     target_token_index = -1
     str_val = str(predicted_val)
     
-    # 後ろから探索（JSONの構造上、outputは最後の方に来るため）
     for i in range(len(logprobs_content) - 1, -1, -1):
         token_str = logprobs_content[i].token.strip()
         if token_str == str_val:
@@ -264,7 +255,6 @@ def calculate_true_probability(logprobs_content, predicted_val):
     if target_token_index == -1:
         return 0.5 
 
-    # 2. その位置での Top Logprobs を取得
     top_logprobs = logprobs_content[target_token_index].top_logprobs
     
     lp_0 = -9999.0
@@ -281,10 +271,8 @@ def calculate_true_probability(logprobs_content, predicted_val):
             found = True
             
     if not found:
-        # Top候補に0も1もいない場合（稀）、予測値を信じる
         return 1.0 if predicted_val == 0 else 0.0
 
-    # 3. Softmax で確率計算
     try:
         prob_0 = math.exp(lp_0)
         prob_1 = math.exp(lp_1)
@@ -298,9 +286,6 @@ def calculate_true_probability(logprobs_content, predicted_val):
 
 @backoff.on_exception(backoff.expo, (openai.RateLimitError, openai.APIConnectionError, openai.InternalServerError), max_tries=5)
 def predict_with_gpt(client, code):
-    """
-    戻り値: (output_label, deleted_probability, reason_text)
-    """
     try:
         code_trunc = truncate_to_tokens(code)
         resp = client.chat.completions.create(
@@ -311,19 +296,15 @@ def predict_with_gpt(client, code):
             ],
             temperature=0.0,
             response_format={"type": "json_schema", "json_schema": JSON_SCHEMA},
-            
-            # === 重要: Logprobs取得設定 ===
             logprobs=True,
             top_logprobs=20 
         )
         
-        # 1. コンテンツのパース
         content = resp.choices[0].message.content
         d = json.loads(content)
         pred_output = d["output"]
-        pred_reason = d.get("reason", "") # 理由を取得
+        pred_reason = d.get("reason", "")
         
-        # 2. Logprobsから確率計算
         logprobs_data = resp.choices[0].logprobs.content
         prob_deleted = calculate_true_probability(logprobs_data, pred_output)
         
@@ -362,7 +343,6 @@ def run_gpt_experiment():
             df_res = pd.read_csv(result_file)
         else:
             predictions = {}
-            # 並列処理 (RateLimitに注意して調整してください)
             with concurrent.futures.ThreadPoolExecutor(max_workers=40) as executor:
                 futures = {executor.submit(predict_with_gpt, client, row['method']): i for i, row in df.iterrows()}
                 
@@ -375,19 +355,14 @@ def run_gpt_experiment():
                         print(f"Err {i}: {e}")
                         predictions[i] = (-1, -1, "")
 
-            # 結果をDataFrameにマッピング
             df['predict'] = df.index.map(lambda x: predictions.get(x, (-1, -1, ""))[0])
             df['prob_deleted'] = df.index.map(lambda x: predictions.get(x, (-1, -1, ""))[1])
             df['reason'] = df.index.map(lambda x: predictions.get(x, (-1, -1, ""))[2])
             
-            # 保存
             df.to_csv(result_file, index=False)
             df_res = df
         
-        # --- 評価 ---
         total_samples += len(df_res)
-        
-        # エラー行 (-1) の除外
         valid_mask = (df_res['predict'] != -1)
         df_valid = df_res[valid_mask].copy()
         
@@ -400,7 +375,7 @@ def run_gpt_experiment():
 
         y_true = df_valid['status'].map(STATUS_MAP).astype(int)
         y_pred = df_valid['predict'].astype(int)
-        y_prob = df_valid['prob_deleted'] # AUC用確率
+        y_prob = df_valid['prob_deleted']
         
         scores = calculate_metrics(y_true, y_pred, y_prob)
         all_scores.append(scores)
@@ -410,9 +385,10 @@ def run_gpt_experiment():
         print("No valid results.")
         return None
 
-    avg_scores = pd.DataFrame(all_scores).mean().to_dict()
+    # --- 中央値スコアの算出 ---
+    median_scores = pd.DataFrame(all_scores).median().to_dict()
     print("-" * 30)
-    print_metrics("GPT Average (Logprobs)", avg_scores)
+    print_metrics("GPT Median (Logprobs)", median_scores)
     
     print("-" * 30)
     print(f"Total Samples: {total_samples}, Dropped: {total_dropped}")
@@ -420,7 +396,7 @@ def run_gpt_experiment():
         print(f"Drop Rate: {total_dropped/total_samples:.2%}")
     print("-" * 30)
 
-    return avg_scores
+    return median_scores
 
 # ==========================================
 # Main
@@ -431,7 +407,7 @@ if __name__ == "__main__":
     gpt_res = run_gpt_experiment()
     
     print("\n" + "="*80)
-    print(f"Target Class: Deleted (0)")
+    print(f"Target Class: Deleted (0) | Metric Values: Median")
     print(f"{'Metric':<12} | {'RF':<10} | {'Random':<10} | {'GPT-4o':<10}")
     print("-" * 80)
     for m in ['accuracy', 'auc', 'f1', 'recall', 'precision']:

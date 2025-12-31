@@ -11,3 +11,4 @@ pandas
 tiktoken
 backoff
 python-dotenv
+cliffs-delta
